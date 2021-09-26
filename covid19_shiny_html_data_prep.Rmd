@@ -1,0 +1,318 @@
+---
+title: "New York City Covid-19 Predictor"
+output: html_document
+runtime: shiny
+---
+
+## Resource: https://www.youtube.com/watch?v=eIpiL6y1oQQ&t=1500s 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(shiny)
+library(tidyverse) # tidy data wrangling
+library(vroom) # fast reading/importing data
+library(sf) # spatial data
+library(tigris) # geojoin
+library(leaflet) # interactive maps
+library(htmlwidgets) # interactive map labels
+```
+
+## Import data
+```{r}
+download.file(url="https://github.com/nychealth/coronavirus-data/archive/master.zip",
+              destfile = "coronavirus-data-master.zip")
+unzip(zipfile = "coronavirus-data-master.zip")
+```
+
+
+
+## EDA
+### Read in data
+```{r}
+percentpos <- vroom("coronavirus-data-master/trends/percentpositive-by-modzcta.csv")
+caserate <- vroom("coronavirus-data-master/trends/caserate-by-modzcta.csv")
+testrate <- vroom("coronavirus-data-master/trends/testrate-by-modzcta.csv")
+```
+
+```{r}
+modzcta <- st_read("coronavirus-data-master/Geography-resources/MODZCTA_2010.shp")
+zcta_conv <- vroom("coronavirus-data-master/Geography-resources/ZCTA-to-MODZCTA.csv", delim = ",")
+```
+
+### Overview
+```{r}
+view(percentpos)
+view(caserate)
+view(testrate)
+```
+
+### Clean the data
+```{r}
+# Clean and reshape caserate data
+caserates <- caserate %>% select(-c(2:7))
+caserates_long <- caserates %>%
+   pivot_longer(2:178, names_to = "modzcta",
+                names_prefix = "CASERATE_", values_to = "caserate")
+```
+
+```{r}
+# Clean and reshape percentpos data
+percentpositives <- percentpos %>% select(-c(2:7))
+percentpos_long <- percentpositives %>%
+   pivot_longer(2:178, names_to = "modzcta",
+                names_prefix = "PCTPOS_", values_to = "pctpos")
+```
+
+```{r}
+# Clean and reshape testrate data
+testrates <- testrate %>% select(-c(2:7))
+testrates_long <- testrates %>%
+   pivot_longer(2:178, names_to = "modzcta",
+                names_prefix = "TESTRATE_", values_to = "testrate")
+```
+
+### Merge in geography data
+```{r}
+# Combine all three long data into one dataframe
+all <- caserates_long %>%
+   left_join(percentpos_long, by = c("week_ending", "modzcta")) %>%
+   left_join(testrates_long, by = c("week_ending", "modzcta"))
+```
+
+
+```{r}
+# Merge covid data with zcta shapefile
+all_modzcta <- geo_join(modzcta, all,
+                        "MODZCTA", "modzcta",
+                        how = "inner") 
+```
+
+```{r}
+# Convert week_ending from a character to a data
+all_modzcta$week_ending <- as.Date(all_modzcta$week_ending, format = "%m/%d/%Y")
+```
+
+```{r}
+# Save datafrome for Shny app
+saveRDS(all_modzcta, "all_modzcta.RDS")
+```
+
+### Data inspection
+```{r}
+# Check distribution of caserate data
+all_modzcta %>%
+   ggplot(aes(x=as.numeric(caserate))) +
+   geom_histogram(bins = 20, fill = "#69b3a2", color = "white")
+```
+
+## Make Interactive Map of Caserate
+```{r}
+labels <- sprintf(
+   "<strong>%s</strong><br/>%g cases per 100,000 people",
+   all_modzcta$MODZCTA, all_modzcta$caserate) %>%
+   lapply(htmltools::HTML)
+```
+
+```{r}
+pal <- colorBin(palette = "OrRd",9, domain = all_modzcta$caserate)
+```
+
+```{r}
+map_interactive <- all_modzcta %>%
+   st_transform(crs = "+init=epsg:4326") %>% #?
+   leaflet() %>%
+   addProviderTiles(provider = "CartoDB.Positron") %>% #?
+   addPolygons(label = labels,
+               stroke = FALSE,
+               smoothFactor = 0.5,
+               opacity = 1,
+               fillOpacity = 0.7,
+               fillColor = ~ pal(caserate),
+               highlightOptions = highlightOptions(weight = 5,
+                                                   fillOpacity = 1,
+                                                   color = "black",
+                                                   opacity = 1,
+                                                   bringToFront = TRUE)) %>%
+   addLegend("bottomright",
+             pal = pal,
+             values = ~ caserate,
+             title = "Cases Per 100,000",
+             opacity = 0.7)
+   
+```
+
+```{r}
+saveWidget(map_interactive, "nyc_covid_caserate_map.html")
+```
+
+
+
+## Shiny web app
+```{r echo=FALSE}
+inputPanel(
+   # Sidebar with data input
+   sidebarLayout(
+      sidebarPanel(
+         tags$a(href="https://github.com/nychealth/coronavirus-data", 
+                "Data Repository", target = "_blank"),
+         h5("All data metrics are aggregated by week (categorized by week ending in data).
+             Percent positive indicates the percentage of people that tested for COVID-19 with a molecular test who tested positive.
+         All data is sourced from the NYC Department of Health."),
+         selectInput("date",
+                     "Select a date (week ending in):",
+                     choices = unique(all_modzcta$week_ending)
+         )
+      ),
+      # Show a plot of the generated distribution
+   mainPanel(
+      tabsetPanel(
+         tabPanel("Case Rate", leafletOutput("cases")),
+         tabPanel("Test Rate", leafletOutput("tests")),
+         tabPanel("Percent Positive", leafletOutput("pctpos"))
+           )
+         )
+   )   
+)
+```
+
+```{r}
+week_zcta <- reactive({
+   w <- all_modzcta %>% filter(week_ending == input$date)
+   return(w)
+})
+```
+
+```{r}
+renderLeaflet({
+   pal <- colorBin(palette = "YlGn", 9, domain = all_modzcta$caserate)
+   
+   labels = sprintf(
+      "<strong>%s</strong><br/>%g cases per 100,000 people",
+      week_zcta()$MODZCTA, week_zcta()$caserate) %>%
+      lapply(htmltools::HTML)
+   
+   week_zcta() %>%
+      st_transform(crs = "+init=epsg:4326") %>%
+      leaflet() %>%
+      addProviderTiles(provider = "CartoDB.Position") %>%
+      setView(-73.9, 40.7, zoom = 10) %>%
+      addPolygons(label = labels,
+                  stroke = FALSE,
+                  opacity = 1,
+                  fillOpacity = 0.7,
+                  fillColor = ~pal(week_zcta()$caserate),
+                  highlightOptions = highlightOptions(weight = 5,
+                                                      fillOpacity = 1,
+                                                      color = "black",
+                                                      opacity = 1,
+                                                      bringToFront = TRUE))%>%
+         addLegend("bottomright",
+                   pal = pal,
+                   values = ~caserate,
+                   title = "Case per 100,000",
+                   opacity = 0.7)
+      
+   
+})
+```
+
+```{r}
+renderLeaflet({
+   pal <- colorBin(palette = "PuBu", 9, domain = all_modzcta$testrate)
+   
+   labels = sprintf(
+      "<strong>%s</strong><br/>%g cases per 100,000 people",
+      week_zcta()$MODZCTA, week_zcta()$testrate) %>%
+      lapply(htmltools::HTML)
+   
+   week_zcta() %>%
+      st_transform(crs = "+init=epsg:4326") %>%
+      leaflet() %>%
+      addProviderTiles(provider = "CartoDB.Position") %>%
+      setView(-73.9, 40.7, zoom = 10) %>%
+      addPolygons(label = labels,
+                  stroke = FALSE,
+                  opacity = 1,
+                  fillOpacity = 0.7,
+                  fillColor = ~pal(week_zcta()$testrate),
+                  highlightOptions = highlightOptions(weight = 5,
+                                                      fillOpacity = 1,
+                                                      color = "black",
+                                                      opacity = 1,
+                                                      bringToFront = TRUE))%>%
+         addLegend("bottomright",
+                   pal = pal,
+                   values = ~testrate,
+                   title = "Case per 100,000",
+                   opacity = 0.7)
+      
+   
+})
+```
+
+```{r}
+renderLeaflet({
+   pal <- colorBin(palette = "OrRd", 9, domain = all_modzcta$pctpos)
+   
+   labels = sprintf(
+      "<strong>%s</strong><br/>%g cases per 100,000 people",
+      week_zcta()$MODZCTA, week_zcta()$pctpos) %>%
+      lapply(htmltools::HTML)
+   
+   week_zcta() %>%
+      st_transform(crs = "+init=epsg:4326") %>%
+      leaflet() %>%
+      addProviderTiles(provider = "CartoDB.Position") %>%
+      setView(-73.9, 40.7, zoom = 10) %>%
+      addPolygons(label = labels,
+                  stroke = FALSE,
+                  opacity = 1,
+                  fillOpacity = 0.7,
+                  fillColor = ~pal(week_zcta()$pctpos),
+                  highlightOptions = highlightOptions(weight = 5,
+                                                      fillOpacity = 1,
+                                                      color = "black",
+                                                      opacity = 1,
+                                                      bringToFront = TRUE))%>%
+         addLegend("bottomright",
+                   pal = pal,
+                   values = ~testrate,
+                   title = "Case per 100,000",
+                   opacity = 0.7)
+      
+   
+})
+```
+
+
+```{r}
+renderPlot({
+     stock <- tq_get(toupper(input$ticker), from = Sys.Date()-365, to = Sys.Date(), get = "stock.prices")
+     #stock <- read.csv("HSBC.csv")
+     stock <- stock[c("date", "close")]
+     #stock$Date <- as.Date(stock$Date)
+     
+     require(gridExtra)
+     p1 <- autoplot(ts(stock[input$n[1]:input$n[2], "close"])) +
+       ggtitle("Close Prices in 12 Month") 
+       #scale_x_date(name = "Date", breaks = c(Sys.Date()-365,Sys.Date()))
+  
+     end = dim(stock)[1]
+     start = end - 100
+     
+     if (input$model == "naive"){
+       mod <- naive(stock[start : end, "close"])
+     } else if (input$model == "ARIMA"){
+       mod <- auto.arima(stock[start : end, "close"])
+     } else {
+       mod <- nnetar(stock[start : end, "close"])
+     }
+     data <- forecast(mod, h = input$h)
+     p2 <- autoplot(forecast(mod, h = input$h)) + 
+       ggtitle("Forecast for next 10 Days based on past 100 Days Price")
+     
+     grid.arrange(p1, p2, ncol=1)
+   })
+```
+
+
