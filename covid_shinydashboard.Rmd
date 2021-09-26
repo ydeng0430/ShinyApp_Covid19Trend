@@ -1,0 +1,173 @@
+---
+title: "New York City Covid-19 Trend by Modified ZCTA"
+output: html_document
+runtime: shiny
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(shiny)
+library(shinyWidgets)
+library(shinydashboard)
+library(wordcloud2)
+library(tm)
+library(xml2)
+library(rvest)
+library(dbplyr)
+library(tidyverse) # tidy data wrangling
+library(vroom) # fast reading/importing data
+library(sf) # spatial data
+library(tigris) # geojoin
+library(leaflet) # interactive maps
+library(htmlwidgets) # interactive map labels
+```
+
+```{r echo=FALSE}
+all_modzcta <- readRDS("all_modzcta.RDS")
+```
+
+```{r include=FALSE}
+ui <- dashboardPage( skin = "red",
+  dashboardHeader(title = "Covid19 Trend in NYC"),
+  dashboardSidebar(
+    sidebarMenu(
+      selectInput("date",
+                  "Select a date (week ending in):",
+                  choices = unique(all_modzcta$week_ending)
+         
+      ),
+      menuItem("Case Rate", tabName = "cases" , icon = icon("head-side-cough")),
+      menuItem("Test Rate", tabName = "tests" , icon = icon("head-side-mask")),
+      menuItem("Percent Positive", tabName = "pctpos" , icon = icon("head-side-virus"))
+      )),
+   
+  dashboardBody(
+    tabItems(
+      tabItem("cases",
+              h1("Case Rate"),
+                 leafletOutput("cases", height = "500px", width = "500px")
+              ),
+      tabItem("tests",
+              h1("Test Rate"),
+                 leafletOutput("tests", height = "500px", width = "500px")
+              ),
+      tabItem("pctpos",
+              h1("Percent Positive"),
+                 leafletOutput("pctpos", height = "500px", width = "500px")
+              )
+     ))
+                 )
+
+```
+
+
+```{r include=FALSE}
+server <- function(input, output) {
+   week_zcta <- reactive({
+   w <- all_modzcta %>% filter(week_ending == input$date)
+   return(w)
+})
+   
+   output$cases <- renderLeaflet({
+   pal <- colorBin(palette = "YlGn", 9, domain = all_modzcta$caserate)
+   
+   labels = sprintf(
+      "<strong>%s</strong><br/>%g cases per 100,000 people",
+      week_zcta()$MODZCTA, week_zcta()$caserate) %>%
+      lapply(htmltools::HTML)
+   
+   week_zcta() %>%
+      st_transform(crs = "+init=epsg:4326") %>%
+      leaflet() %>%
+      addProviderTiles(provider = "CartoDB.Positron") %>%
+      setView(-73.9, 40.7, zoom = 10) %>%
+      addPolygons(label = labels,
+                  stroke = FALSE,
+                  opacity = 1,
+                  fillOpacity = 0.7,
+                  fillColor = ~pal(week_zcta()$caserate),
+                  highlightOptions = highlightOptions(weight = 5,
+                                                      fillOpacity = 1,
+                                                      color = "black",
+                                                      opacity = 1,
+                                                      bringToFront = TRUE))%>%
+         addLegend("bottomright",
+                   pal = pal,
+                   values = ~caserate,
+                   title = "Case per 100,000",
+                   opacity = 0.7)
+      
+   
+})
+   
+   output$tests <- renderLeaflet({
+   pal <- colorBin(palette = "PuBu", 9, domain = all_modzcta$testrate)
+   
+   labels = sprintf(
+      "<strong>%s</strong><br/>%g cases per 100,000 people",
+      week_zcta()$MODZCTA, week_zcta()$testrate) %>%
+      lapply(htmltools::HTML)
+   
+   week_zcta() %>%
+      st_transform(crs = "+init=epsg:4326") %>%
+      leaflet() %>%
+      addProviderTiles(provider = "CartoDB.Positron") %>%
+      setView(-73.9, 40.7, zoom = 10) %>%
+      addPolygons(label = labels,
+                  stroke = FALSE,
+                  opacity = 1,
+                  fillOpacity = 0.7,
+                  fillColor = ~pal(week_zcta()$testrate),
+                  highlightOptions = highlightOptions(weight = 5,
+                                                      fillOpacity = 1,
+                                                      color = "black",
+                                                      opacity = 1,
+                                                      bringToFront = TRUE))%>%
+         addLegend("bottomright",
+                   pal = pal,
+                   values = ~testrate,
+                   title = "Case per 100,000",
+                   opacity = 0.7)
+      
+   
+})
+   
+   output$pctpos <- renderLeaflet({
+   pal <- colorBin(palette = "OrRd", 9, domain = all_modzcta$pctpos)
+   
+   labels = sprintf(
+      "<strong>%s</strong><br/>%g cases per 100,000 people",
+      week_zcta()$MODZCTA, week_zcta()$pctpos) %>%
+      lapply(htmltools::HTML)
+   
+   week_zcta() %>%
+      st_transform(crs = "+init=epsg:4326") %>%
+      leaflet() %>%
+      addProviderTiles(provider = "CartoDB.Positron") %>%
+      setView(-73.9, 40.7, zoom = 10) %>%
+      addPolygons(label = labels,
+                  stroke = FALSE,
+                  opacity = 1,
+                  fillOpacity = 0.7,
+                  fillColor = ~pal(week_zcta()$pctpos),
+                  highlightOptions = highlightOptions(weight = 5,
+                                                      fillOpacity = 1,
+                                                      color = "black",
+                                                      opacity = 1,
+                                                      bringToFront = TRUE))%>%
+         addLegend("bottomright",
+                   pal = pal,
+                   values = ~testrate,
+                   title = "Case per 100,000",
+                   opacity = 0.7)
+      
+   
+})
+}
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+shinyApp(ui = ui, server = server, options = list(height=1300))
+```
